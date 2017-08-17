@@ -41,6 +41,25 @@ test('DragRotateHandler rotates in response to a right-click drag', (t) => {
     t.end();
 });
 
+test('DragRotateHandler stops rotating after mouseup', (t) => {
+    const map = createMap();
+
+    simulate.mousedown(map.getCanvas(), {bubbles: true, buttons: 2, button: 2});
+    simulate.mousemove(map.getCanvas(), {bubbles: true, buttons: 2});
+    simulate.mouseup(map.getCanvas(),   {bubbles: true, buttons: 0, button: 2});
+
+    const spy = t.spy();
+
+    map.on('rotatestart', spy);
+    map.on('rotate',      spy);
+    map.on('rotateend',   spy);
+
+    simulate.mousemove(map.getCanvas(), {bubbles: true, buttons: 0});
+
+    t.ok(spy.notCalled);
+    t.end();
+});
+
 test('DragRotateHandler rotates in response to a control-left-click drag', (t) => {
     const map = createMap();
 
