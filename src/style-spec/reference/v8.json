@@ -2790,6 +2790,22 @@
         }
       }
     },
+    "halo-overdraw": {
+      "type": "boolean",
+      "function": "piecewise-constant",
+      "zoom-function": true,
+      "default": false,
+      "doc": "If true, the halo will  be drawn with their text overlapping other text",
+      "sdk-support": {
+        "basic functionality": {
+          "js": "0.33.0",
+          "android": "5.0.0",
+          "ios": "3.5.0",
+          "macos": "0.4.0"
+        },
+        "data-driven styling": {}
+      }
+    },
     "icon-halo-blur": {
       "type": "number",
       "default": 0,
