@@ -254,6 +254,7 @@ declare type SymbolLayerSpecification = {|
         "text-halo-color"?: DataDrivenPropertyValueSpecification<ColorSpecification>,
         "text-halo-width"?: DataDrivenPropertyValueSpecification<number>,
         "text-halo-blur"?: DataDrivenPropertyValueSpecification<number>,
+        "halo-overdraw"?: PropertyValueSpecification<boolean>,
         "text-translate"?: PropertyValueSpecification<[number, number]>,
         "text-translate-anchor"?: PropertyValueSpecification<"map" | "viewport">
     |}

@@ -4862,6 +4862,27 @@
       },
       "property-type": "data-driven"
     },
+    "halo-overdraw": {
+      "type": "boolean",
+      "default": false,
+      "doc": "If true, the halo will  be drawn with their text overlapping other text",
+      "sdk-support": {
+        "basic functionality": {
+          "js": "0.33.0",
+          "android": "5.0.0",
+          "ios": "3.5.0",
+          "macos": "0.4.0"
+        },
+        "data-driven styling": {}
+      },
+      "expression": {
+        "interpolated": false,
+        "parameters": [
+          "zoom"
+        ]
+      },
+      "property-type": "data-constant"
+    },
     "text-translate": {
       "type": "array",
       "value": "number",
