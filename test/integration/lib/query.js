@@ -47,7 +47,7 @@ exports.run = function (implementation, options, query) {
         query(style, params, (err, data, results) => {
             if (err) return done(err);
 
-            const dir = path.join(directory, params.group, params.test);
+            const dir = path.join(directory, params.id);
 
             if (process.env.UPDATE) {
                 fs.writeFile(path.join(dir, 'expected.json'), JSON.stringify(results, null, 2), done);
@@ -55,6 +55,15 @@ exports.run = function (implementation, options, query) {
             }
 
             const expected = require(path.join(dir, 'expected.json'));
+
+            //For feature states, remove 'state' from fixtures until implemented in native https://github.com/mapbox/mapbox-gl-native/issues/11846
+            if (implementation === 'native') {
+                for (let i = 0; i < expected.length; i++) {
+                    delete expected[i].state;
+                    delete expected[i].source;
+                    delete expected[i].sourceLayer;
+                }
+            }
             params.ok = deepEqual(results, expected);
 
             if (!params.ok) {
@@ -97,7 +106,10 @@ exports.run = function (implementation, options, query) {
                 drawAxisAlignedLine([b[0], a[1]], [a[0], a[1]], data, width, height, color);
             }
 
-            const actual = path.join(dir, 'actual.png');
+            const actualJSON = path.join(dir, 'actual.json');
+            fs.writeFile(actualJSON, JSON.stringify(results, null, 2), () => {});
+
+            const actualPNG = path.join(dir, 'actual.png');
 
             const png = new PNG({
                 width: params.width * params.pixelRatio,
@@ -107,9 +119,9 @@ exports.run = function (implementation, options, query) {
             png.data = data;
 
             png.pack()
-                .pipe(fs.createWriteStream(actual))
+                .pipe(fs.createWriteStream(actualPNG))
                 .on('finish', () => {
-                    params.actual = fs.readFileSync(actual).toString('base64');
+                    params.actual = fs.readFileSync(actualPNG).toString('base64');
                     done();
                 });
         });

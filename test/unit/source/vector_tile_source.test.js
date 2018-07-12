@@ -1,15 +1,13 @@
-'use strict';
-
-const test = require('mapbox-gl-js-test').test;
-const VectorTileSource = require('../../../src/source/vector_tile_source');
-const TileCoord = require('../../../src/source/tile_coord');
-const window = require('../../../src/util/window');
-const Evented = require('../../../src/util/evented');
+import { test } from 'mapbox-gl-js-test';
+import VectorTileSource from '../../../src/source/vector_tile_source';
+import { OverscaledTileID } from '../../../src/source/tile_id';
+import window from '../../../src/util/window';
+import { Evented } from '../../../src/util/evented';
 
 function createSource(options, transformCallback) {
     const source = new VectorTileSource('id', options, { send: function() {} }, options.eventedParent);
     source.onAdd({
-        transform: { angle: 0, pitch: 0, cameraToCenterDistance: 1, cameraToTileDistance: () => { return 1; }, showCollisionBoxes: false },
+        transform: { showCollisionBoxes: false },
         _transformRequest: transformCallback ? transformCallback : (url) => { return { url }; }
     });
 
@@ -153,7 +151,9 @@ test('VectorTileSource', (t) => {
             };
 
             source.on('data', (e) => {
-                if (e.sourceDataType === 'metadata') source.loadTile({coord: new TileCoord(10, 5, 5, 0)}, () => {});
+                if (e.sourceDataType === 'metadata') source.loadTile({
+                    tileID: new OverscaledTileID(10, 0, 10, 5, 5)
+                }, () => {});
             });
         });
     }
@@ -169,7 +169,7 @@ test('VectorTileSource', (t) => {
         source.on('data', (e) => {
             if (e.sourceDataType === 'metadata') {
                 const tile = {
-                    coord: new TileCoord(10, 5, 5, 0),
+                    tileID: new OverscaledTileID(10, 0, 10, 5, 5),
                     state: 'loading',
                     loadVectorData: function () {},
                     setExpiryData: function() {}
@@ -199,7 +199,7 @@ test('VectorTileSource', (t) => {
         source.on('data', (e) => {
             if (e.sourceDataType === 'metadata') {
                 const tile = {
-                    coord: new TileCoord(10, 5, 5, 0),
+                    tileID: new OverscaledTileID(10, 0, 10, 5, 5),
                     state: 'loading',
                     loadVectorData: function () {
                         this.state = 'loaded';
@@ -223,11 +223,15 @@ test('VectorTileSource', (t) => {
             maxzoom: 22,
             attribution: "Mapbox",
             tiles: ["http://example.com/{z}/{x}/{y}.png"],
+            bounds: [-47, -7, -45, -5]
         });
-        source.setBounds([-47, -7, -45, -5]);
-        t.false(source.hasTile({z: 8, x:96, y: 132}), 'returns false for tiles outside bounds');
-        t.true(source.hasTile({z: 8, x:95, y: 132}), 'returns true for tiles inside bounds');
-        t.end();
+        source.on('data', (e)=>{
+            if (e.sourceDataType === 'metadata') {
+                t.false(source.hasTile(new OverscaledTileID(8, 0, 8, 96, 132)), 'returns false for tiles outside bounds');
+                t.true(source.hasTile(new OverscaledTileID(8, 0, 8, 95, 132)), 'returns true for tiles inside bounds');
+                t.end();
+            }
+        });
     });
 
     t.test('does not error on invalid bounds', (t)=>{
@@ -236,10 +240,15 @@ test('VectorTileSource', (t) => {
             maxzoom: 22,
             attribution: "Mapbox",
             tiles: ["http://example.com/{z}/{x}/{y}.png"],
+            bounds: [-47, -7, -45, 91]
         });
-        source.setBounds([-47, -7, -45, 91]);
-        t.deepEqual(source.tileBounds.bounds, {_sw:{lng: -47, lat: -7}, _ne:{lng: -45, lat: 90}}, 'converts invalid bounds to closest valid bounds');
-        t.end();
+
+        source.on('data', (e)=>{
+            if (e.sourceDataType === 'metadata') {
+                t.deepEqual(source.tileBounds.bounds, {_sw:{lng: -47, lat: -7}, _ne:{lng: -45, lat: 90}}, 'converts invalid bounds to closest valid bounds');
+                t.end();
+            }
+        });
     });
 
     t.test('respects TileJSON.bounds when loaded from TileJSON', (t)=>{
@@ -254,12 +263,44 @@ test('VectorTileSource', (t) => {
 
         source.on('data', (e) => {
             if (e.sourceDataType === 'metadata') {
-                t.false(source.hasTile({z: 8, x:96, y: 132}), 'returns false for tiles outside bounds');
-                t.true(source.hasTile({z: 8, x:95, y: 132}), 'returns true for tiles inside bounds');
+                t.false(source.hasTile(new OverscaledTileID(8, 0, 8, 96, 132)), 'returns false for tiles outside bounds');
+                t.true(source.hasTile(new OverscaledTileID(8, 0, 8, 95, 132)), 'returns true for tiles inside bounds');
                 t.end();
             }
         });
         window.server.respond();
+    });
+
+    t.test('respects collectResourceTiming parameter on source', (t) => {
+        const source = createSource({
+            tiles: ["http://example.com/{z}/{x}/{y}.png"],
+            collectResourceTiming: true
+        });
+        source.dispatcher.send = function(type, params, cb) {
+            t.true(params.request.collectResourceTiming, 'collectResourceTiming is true on dispatcher message');
+            setTimeout(cb, 0);
+            t.end();
+            return 1;
+        };
+
+        source.on('data', (e) => {
+            if (e.sourceDataType === 'metadata') {
+                const tile = {
+                    tileID: new OverscaledTileID(10, 0, 10, 5, 5),
+                    state: 'loading',
+                    loadVectorData: function () {},
+                    setExpiryData: function() {}
+                };
+                source.loadTile(tile, () => {});
+            }
+        });
+    });
+
+    t.test('cancels TileJSON request if removed', (t) => {
+        const source = createSource({ url: "/source.json" });
+        source.onRemove();
+        t.equal(window.server.lastRequest.aborted, true);
+        t.end();
     });
 
     t.end();

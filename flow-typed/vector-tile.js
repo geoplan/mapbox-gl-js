@@ -1,8 +1,11 @@
+import type Pbf from 'pbf';
+
 declare interface VectorTile {
     layers: {[string]: VectorTileLayer};
 }
 
 declare interface VectorTileLayer {
+    version?: number;
     name: string;
     extent: number;
     length: number;
@@ -16,7 +19,6 @@ declare interface VectorTileFeature {
     properties: {[string]: string | number | boolean};
 
     loadGeometry(): Array<Array<Point>>;
-    bbox(): [number, number, number, number];
     toGeoJSON(x: number, y: number, z: number): GeoJSONFeature;
 }
 

@@ -1,25 +1,34 @@
 // @flow
 
-const jsdom = require('jsdom');
-const gl = require('gl');
-const sinon = require('sinon');
-const util = require('./util');
+import jsdom from 'jsdom';
+
+import gl from 'gl';
+import sinon from 'sinon';
+import { extend } from './util';
+
+const { window: _window } = new jsdom.JSDOM('', {
+    virtualConsole: new jsdom.VirtualConsole().sendTo(console)
+});
+
+restore();
+
+export default _window;
 
 function restore(): Window {
-    // Remove previous window from module.exports
-    const previousWindow = module.exports;
+    // Remove previous window from exported object
+    const previousWindow = _window;
     if (previousWindow.close) previousWindow.close();
     for (const key in previousWindow) {
         if (previousWindow.hasOwnProperty(key)) {
-            delete previousWindow[key];
+            delete (previousWindow: any)[key];
         }
     }
 
-    // Create new window and inject into module.exports
-    const window = jsdom.jsdom(undefined, {
+    // Create new window and inject into exported object
+    const { window } = new jsdom.JSDOM('', {
         // Send jsdom console output to the node console object.
-        virtualConsole: jsdom.createVirtualConsole().sendTo(console)
-    }).defaultView;
+        virtualConsole: new jsdom.VirtualConsole().sendTo(console)
+    });
 
     window.devicePixelRatio = 1;
 
@@ -56,10 +65,9 @@ function restore(): Window {
     window.restore = restore;
 
     window.ImageData = window.ImageData || function() { return false; };
-
-    util.extend(module.exports, window);
+    window.ImageBitmap = window.ImageBitmap || function() { return false; };
+    window.WebGLFramebuffer = window.WebGLFramebuffer || Object;
+    extend(_window, window);
 
     return window;
 }
-
-module.exports = restore();

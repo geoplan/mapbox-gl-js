@@ -1,126 +1,119 @@
 // @flow
 
-const {SegmentVector} = require('../segment');
-const Buffer = require('../buffer');
-const {ProgramConfigurationSet} = require('../program_configuration');
-const createVertexArrayType = require('../vertex_array_type');
-const createElementArrayType = require('../element_array_type');
-const loadGeometry = require('../load_geometry');
-const earcut = require('earcut');
-const classifyRings = require('../../util/classify_rings');
-const assert = require('assert');
+import { FillLayoutArray } from '../array_types';
+
+import { members as layoutAttributes } from './fill_attributes';
+import SegmentVector from '../segment';
+import { ProgramConfigurationSet } from '../program_configuration';
+import { LineIndexArray, TriangleIndexArray } from '../index_array_type';
+import loadGeometry from '../load_geometry';
+import earcut from 'earcut';
+import classifyRings from '../../util/classify_rings';
+import assert from 'assert';
 const EARCUT_MAX_RINGS = 500;
+import { register } from '../../util/web_worker_transfer';
+import EvaluationParameters from '../../style/evaluation_parameters';
 
-import type {Bucket, IndexedFeature, PopulateParameters, SerializedBucket} from '../bucket';
-import type {ProgramInterface} from '../program_configuration';
-import type StyleLayer from '../../style/style_layer';
-import type {StructArray} from '../../util/struct_array';
-
-const fillInterface = {
-    layoutAttributes: [
-        {name: 'a_pos', components: 2, type: 'Int16'}
-    ],
-    elementArrayType: createElementArrayType(3),
-    elementArrayType2: createElementArrayType(2),
-
-    paintAttributes: [
-        {property: 'fill-color'},
-        {property: 'fill-outline-color'},
-        {property: 'fill-opacity'}
-    ]
-};
-
-const LayoutVertexArrayType = createVertexArrayType(fillInterface.layoutAttributes);
-const ElementArrayType = fillInterface.elementArrayType;
-const ElementArrayType2 = fillInterface.elementArrayType2;
+import type {
+    Bucket,
+    BucketParameters,
+    IndexedFeature,
+    PopulateParameters
+} from '../bucket';
+import type FillStyleLayer from '../../style/style_layer/fill_style_layer';
+import type Context from '../../gl/context';
+import type IndexBuffer from '../../gl/index_buffer';
+import type VertexBuffer from '../../gl/vertex_buffer';
+import type Point from '@mapbox/point-geometry';
+import type {FeatureStates} from '../../source/source_state';
 
 class FillBucket implements Bucket {
-    static programInterface: ProgramInterface;
-
     index: number;
     zoom: number;
     overscaling: number;
-    layers: Array<StyleLayer>;
+    layers: Array<FillStyleLayer>;
+    layerIds: Array<string>;
+    stateDependentLayers: Array<FillStyleLayer>;
 
-    layoutVertexArray: StructArray;
-    layoutVertexBuffer: Buffer;
+    layoutVertexArray: FillLayoutArray;
+    layoutVertexBuffer: VertexBuffer;
 
-    elementArray: StructArray;
-    elementBuffer: Buffer;
+    indexArray: TriangleIndexArray;
+    indexBuffer: IndexBuffer;
 
-    elementArray2: StructArray;
-    elementBuffer2: Buffer;
+    indexArray2: LineIndexArray;
+    indexBuffer2: IndexBuffer;
 
-    programConfigurations: ProgramConfigurationSet;
+    programConfigurations: ProgramConfigurationSet<FillStyleLayer>;
     segments: SegmentVector;
     segments2: SegmentVector;
+    uploaded: boolean;
 
-    constructor(options: any) {
+    constructor(options: BucketParameters<FillStyleLayer>) {
         this.zoom = options.zoom;
         this.overscaling = options.overscaling;
         this.layers = options.layers;
+        this.layerIds = this.layers.map(layer => layer.id);
         this.index = options.index;
 
-        if (options.layoutVertexArray) {
-            this.layoutVertexBuffer = new Buffer(options.layoutVertexArray, LayoutVertexArrayType.serialize(), Buffer.BufferType.VERTEX);
-            this.elementBuffer = new Buffer(options.elementArray, ElementArrayType.serialize(), Buffer.BufferType.ELEMENT);
-            this.elementBuffer2 = new Buffer(options.elementArray2, ElementArrayType2.serialize(), Buffer.BufferType.ELEMENT);
-            this.programConfigurations = ProgramConfigurationSet.deserialize(fillInterface, options.layers, options.zoom, options.programConfigurations);
-            this.segments = new SegmentVector(options.segments);
-            this.segments2 = new SegmentVector(options.segments2);
-        } else {
-            this.layoutVertexArray = new LayoutVertexArrayType();
-            this.elementArray = new ElementArrayType();
-            this.elementArray2 = new ElementArrayType2();
-            this.programConfigurations = new ProgramConfigurationSet(fillInterface, options.layers, options.zoom);
-            this.segments = new SegmentVector();
-            this.segments2 = new SegmentVector();
-        }
+        this.layoutVertexArray = new FillLayoutArray();
+        this.indexArray = new TriangleIndexArray();
+        this.indexArray2 = new LineIndexArray();
+        this.programConfigurations = new ProgramConfigurationSet(layoutAttributes, options.layers, options.zoom);
+        this.segments = new SegmentVector();
+        this.segments2 = new SegmentVector();
     }
 
     populate(features: Array<IndexedFeature>, options: PopulateParameters) {
         for (const {feature, index, sourceLayerIndex} of features) {
-            if (this.layers[0].filter(feature)) {
-                this.addFeature(feature);
-                options.featureIndex.insert(feature, index, sourceLayerIndex, this.index);
+            if (this.layers[0]._featureFilter(new EvaluationParameters(this.zoom), feature)) {
+                const geometry = loadGeometry(feature);
+                this.addFeature(feature, geometry, index);
+                options.featureIndex.insert(feature, geometry, index, sourceLayerIndex, this.index);
             }
         }
+    }
+
+    update(states: FeatureStates, vtLayer: VectorTileLayer) {
+        if (!this.stateDependentLayers.length) return;
+        this.programConfigurations.updatePaintArrays(states, vtLayer, this.stateDependentLayers);
     }
 
     isEmpty() {
         return this.layoutVertexArray.length === 0;
     }
 
-    serialize(transferables?: Array<Transferable>): SerializedBucket {
-        return {
-            zoom: this.zoom,
-            layerIds: this.layers.map((l) => l.id),
-            layoutVertexArray: this.layoutVertexArray.serialize(transferables),
-            elementArray: this.elementArray.serialize(transferables),
-            elementArray2: this.elementArray2.serialize(transferables),
-            programConfigurations: this.programConfigurations.serialize(transferables),
-            segments: this.segments.get(),
-            segments2: this.segments2.get()
-        };
+    uploadPending(): boolean {
+        return !this.uploaded || this.programConfigurations.needsUpload;
+    }
+    upload(context: Context) {
+        if (!this.uploaded) {
+            this.layoutVertexBuffer = context.createVertexBuffer(this.layoutVertexArray, layoutAttributes);
+            this.indexBuffer = context.createIndexBuffer(this.indexArray);
+            this.indexBuffer2 = context.createIndexBuffer(this.indexArray2);
+        }
+        this.programConfigurations.upload(context);
+        this.uploaded = true;
     }
 
     destroy() {
+        if (!this.layoutVertexBuffer) return;
         this.layoutVertexBuffer.destroy();
-        this.elementBuffer.destroy();
-        this.elementBuffer2.destroy();
+        this.indexBuffer.destroy();
+        this.indexBuffer2.destroy();
         this.programConfigurations.destroy();
         this.segments.destroy();
         this.segments2.destroy();
     }
 
-    addFeature(feature: VectorTileFeature) {
-        for (const polygon of classifyRings(loadGeometry(feature), EARCUT_MAX_RINGS)) {
+    addFeature(feature: VectorTileFeature, geometry: Array<Array<Point>>, index: number) {
+        for (const polygon of classifyRings(geometry, EARCUT_MAX_RINGS)) {
             let numVertices = 0;
             for (const ring of polygon) {
                 numVertices += ring.length;
             }
 
-            const triangleSegment = this.segments.prepareSegment(numVertices, this.layoutVertexArray, this.elementArray);
+            const triangleSegment = this.segments.prepareSegment(numVertices, this.layoutVertexArray, this.indexArray);
             const triangleIndex = triangleSegment.vertexLength;
 
             const flattened = [];
@@ -135,17 +128,17 @@ class FillBucket implements Bucket {
                     holeIndices.push(flattened.length / 2);
                 }
 
-                const lineSegment = this.segments2.prepareSegment(ring.length, this.layoutVertexArray, this.elementArray2);
+                const lineSegment = this.segments2.prepareSegment(ring.length, this.layoutVertexArray, this.indexArray2);
                 const lineIndex = lineSegment.vertexLength;
 
                 this.layoutVertexArray.emplaceBack(ring[0].x, ring[0].y);
-                this.elementArray2.emplaceBack(lineIndex + ring.length - 1, lineIndex);
+                this.indexArray2.emplaceBack(lineIndex + ring.length - 1, lineIndex);
                 flattened.push(ring[0].x);
                 flattened.push(ring[0].y);
 
                 for (let i = 1; i < ring.length; i++) {
                     this.layoutVertexArray.emplaceBack(ring[i].x, ring[i].y);
-                    this.elementArray2.emplaceBack(lineIndex + i - 1, lineIndex + i);
+                    this.indexArray2.emplaceBack(lineIndex + i - 1, lineIndex + i);
                     flattened.push(ring[i].x);
                     flattened.push(ring[i].y);
                 }
@@ -158,7 +151,7 @@ class FillBucket implements Bucket {
             assert(indices.length % 3 === 0);
 
             for (let i = 0; i < indices.length; i += 3) {
-                this.elementArray.emplaceBack(
+                this.indexArray.emplaceBack(
                     triangleIndex + indices[i],
                     triangleIndex + indices[i + 1],
                     triangleIndex + indices[i + 2]);
@@ -168,10 +161,10 @@ class FillBucket implements Bucket {
             triangleSegment.primitiveLength += indices.length / 3;
         }
 
-        this.programConfigurations.populatePaintArrays(this.layoutVertexArray.length, feature.properties);
+        this.programConfigurations.populatePaintArrays(this.layoutVertexArray.length, feature, index);
     }
 }
 
-FillBucket.programInterface = fillInterface;
+register('FillBucket', FillBucket, {omit: ['layers']});
 
-module.exports = FillBucket;
+export default FillBucket;

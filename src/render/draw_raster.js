@@ -1,90 +1,105 @@
 // @flow
 
-const util = require('../util/util');
+import { clamp } from '../util/util';
+
+import ImageSource from '../source/image_source';
+import browser from '../util/browser';
+import StencilMode from '../gl/stencil_mode';
+import DepthMode from '../gl/depth_mode';
 
 import type Painter from './painter';
 import type SourceCache from '../source/source_cache';
-import type StyleLayer from '../style/style_layer';
-import type TileCoord from '../source/tile_coord';
+import type RasterStyleLayer from '../style/style_layer/raster_style_layer';
+import type {OverscaledTileID} from '../source/tile_id';
 
-module.exports = drawRaster;
+export default drawRaster;
 
-function drawRaster(painter: Painter, sourceCache: SourceCache, layer: StyleLayer, coords: Array<TileCoord>) {
-    if (painter.isOpaquePass) return;
+function drawRaster(painter: Painter, sourceCache: SourceCache, layer: RasterStyleLayer, coords: Array<OverscaledTileID>) {
+    if (painter.renderPass !== 'translucent') return;
+    if (layer.paint.get('raster-opacity') === 0) return;
 
-    const gl = painter.gl;
-
-    gl.enable(gl.DEPTH_TEST);
-    painter.depthMask(true);
-
-    // Change depth function to prevent double drawing in areas where tiles overlap.
-    gl.depthFunc(gl.LESS);
-
-    const minTileZ = coords.length && coords[0].z;
-
-    for (let i = 0; i < coords.length; i++) {
-        const coord = coords[i];
-        // set the lower zoom level to sublayer 0, and higher zoom levels to higher sublayers
-        painter.setDepthSublayer(coord.z - minTileZ);
-        drawRasterTile(painter, sourceCache, layer, coord);
-    }
-
-    gl.depthFunc(gl.LEQUAL);
-}
-
-function drawRasterTile(painter, sourceCache, layer, coord) {
-
-    const gl = painter.gl;
-
-    gl.disable(gl.STENCIL_TEST);
-
-    const tile = sourceCache.getTile(coord);
-    const posMatrix = painter.transform.calculatePosMatrix(coord, sourceCache.getSource().maxzoom);
-
-    tile.registerFadeDuration(painter.style.animationLoop, layer.paint['raster-fade-duration']);
-
+    const context = painter.context;
+    const gl = context.gl;
+    const source = sourceCache.getSource();
     const program = painter.useProgram('raster');
-    gl.uniformMatrix4fv(program.uniforms.u_matrix, false, posMatrix);
 
-    // color parameters
-    gl.uniform1f(program.uniforms.u_brightness_low, layer.paint['raster-brightness-min']);
-    gl.uniform1f(program.uniforms.u_brightness_high, layer.paint['raster-brightness-max']);
-    gl.uniform1f(program.uniforms.u_saturation_factor, saturationFactor(layer.paint['raster-saturation']));
-    gl.uniform1f(program.uniforms.u_contrast_factor, contrastFactor(layer.paint['raster-contrast']));
-    gl.uniform3fv(program.uniforms.u_spin_weights, spinWeights(layer.paint['raster-hue-rotate']));
+    context.setStencilMode(StencilMode.disabled);
+    context.setColorMode(painter.colorModeForRenderPass());
 
-    const parentTile = tile.sourceCache && tile.sourceCache.findLoadedParent(coord, 0, {}),
-        fade = getFadeValues(tile, parentTile, layer, painter.transform);
-
-    let parentScaleBy, parentTL;
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tile.texture);
-
-    gl.activeTexture(gl.TEXTURE1);
-
-    if (parentTile) {
-        gl.bindTexture(gl.TEXTURE_2D, parentTile.texture);
-        parentScaleBy = Math.pow(2, parentTile.coord.z - tile.coord.z);
-        parentTL = [tile.coord.x * parentScaleBy % 1, tile.coord.y * parentScaleBy % 1];
-
-    } else {
-        gl.bindTexture(gl.TEXTURE_2D, tile.texture);
-    }
-
-    // cross-fade parameters
-    gl.uniform2fv(program.uniforms.u_tl_parent, parentTL || [0, 0]);
-    gl.uniform1f(program.uniforms.u_scale_parent, parentScaleBy || 1);
+    // Constant parameters.
+    gl.uniform1f(program.uniforms.u_brightness_low, layer.paint.get('raster-brightness-min'));
+    gl.uniform1f(program.uniforms.u_brightness_high, layer.paint.get('raster-brightness-max'));
+    gl.uniform1f(program.uniforms.u_saturation_factor, saturationFactor(layer.paint.get('raster-saturation')));
+    gl.uniform1f(program.uniforms.u_contrast_factor, contrastFactor(layer.paint.get('raster-contrast')));
+    gl.uniform3fv(program.uniforms.u_spin_weights, spinWeights(layer.paint.get('raster-hue-rotate')));
     gl.uniform1f(program.uniforms.u_buffer_scale, 1);
-    gl.uniform1f(program.uniforms.u_fade_t, fade.mix);
-    gl.uniform1f(program.uniforms.u_opacity, fade.opacity * layer.paint['raster-opacity']);
     gl.uniform1i(program.uniforms.u_image0, 0);
     gl.uniform1i(program.uniforms.u_image1, 1);
 
-    const buffer = tile.boundsBuffer || painter.rasterBoundsBuffer;
-    const vao = tile.boundsVAO || painter.rasterBoundsVAO;
-    vao.bind(gl, program, buffer);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, buffer.length);
+    const minTileZ = coords.length && coords[0].overscaledZ;
+
+    for (const coord of coords) {
+        // Set the lower zoom level to sublayer 0, and higher zoom levels to higher sublayers
+        // Use gl.LESS to prevent double drawing in areas where tiles overlap.
+        context.setDepthMode(painter.depthModeForSublayer(coord.overscaledZ - minTileZ,
+            layer.paint.get('raster-opacity') === 1 ? DepthMode.ReadWrite : DepthMode.ReadOnly, gl.LESS));
+
+        const tile = sourceCache.getTile(coord);
+        const posMatrix = painter.transform.calculatePosMatrix(coord.toUnwrapped(), true);
+
+        tile.registerFadeDuration(layer.paint.get('raster-fade-duration'));
+
+        gl.uniformMatrix4fv(program.uniforms.u_matrix, false, posMatrix);
+
+        const parentTile = sourceCache.findLoadedParent(coord, 0, {}),
+            fade = getFadeValues(tile, parentTile, sourceCache, layer, painter.transform);
+
+        let parentScaleBy, parentTL;
+
+        const textureFilter = layer.paint.get('raster-resampling') === 'nearest' ?  gl.NEAREST : gl.LINEAR;
+
+        context.activeTexture.set(gl.TEXTURE0);
+        tile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
+
+        context.activeTexture.set(gl.TEXTURE1);
+
+        if (parentTile) {
+            parentTile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
+            parentScaleBy = Math.pow(2, parentTile.tileID.overscaledZ - tile.tileID.overscaledZ);
+            parentTL = [tile.tileID.canonical.x * parentScaleBy % 1, tile.tileID.canonical.y * parentScaleBy % 1];
+
+        } else {
+            tile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
+        }
+
+        // cross-fade parameters
+        gl.uniform2fv(program.uniforms.u_tl_parent, parentTL || [0, 0]);
+        gl.uniform1f(program.uniforms.u_scale_parent, parentScaleBy || 1);
+        gl.uniform1f(program.uniforms.u_fade_t, fade.mix);
+        gl.uniform1f(program.uniforms.u_opacity, fade.opacity * layer.paint.get('raster-opacity'));
+
+
+        if (source instanceof ImageSource) {
+            const buffer = source.boundsBuffer;
+            const vao = source.boundsVAO;
+            vao.bind(context, program, buffer, []);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, buffer.length);
+        } else if (tile.maskedBoundsBuffer && tile.maskedIndexBuffer && tile.segments) {
+            program.draw(
+                context,
+                gl.TRIANGLES,
+                layer.id,
+                tile.maskedBoundsBuffer,
+                tile.maskedIndexBuffer,
+                tile.segments
+            );
+        } else {
+            const buffer = painter.rasterBoundsBuffer;
+            const vao = painter.rasterBoundsVAO;
+            vao.bind(context, program, buffer, []);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, buffer.length);
+        }
+    }
 }
 
 function spinWeights(angle) {
@@ -110,24 +125,24 @@ function saturationFactor(saturation) {
         -saturation;
 }
 
-function getFadeValues(tile, parentTile, layer, transform) {
-    const fadeDuration = layer.paint['raster-fade-duration'];
+function getFadeValues(tile, parentTile, sourceCache, layer, transform) {
+    const fadeDuration = layer.paint.get('raster-fade-duration');
 
-    if (tile.sourceCache && fadeDuration > 0) {
-        const now = Date.now();
+    if (fadeDuration > 0) {
+        const now = browser.now();
         const sinceTile = (now - tile.timeAdded) / fadeDuration;
         const sinceParent = parentTile ? (now - parentTile.timeAdded) / fadeDuration : -1;
 
-        const source = tile.sourceCache.getSource();
+        const source = sourceCache.getSource();
         const idealZ = transform.coveringZoomLevel({
             tileSize: source.tileSize,
             roundZoom: source.roundZoom
         });
 
         // if no parent or parent is older, fade in; if parent is younger, fade out
-        const fadeIn = !parentTile || Math.abs(parentTile.coord.z - idealZ) > Math.abs(tile.coord.z - idealZ);
+        const fadeIn = !parentTile || Math.abs(parentTile.tileID.overscaledZ - idealZ) > Math.abs(tile.tileID.overscaledZ - idealZ);
 
-        const childOpacity = (fadeIn && tile.refreshedUponExpiration) ? 1 : util.clamp(fadeIn ? sinceTile : 1 - sinceParent, 0, 1);
+        const childOpacity = (fadeIn && tile.refreshedUponExpiration) ? 1 : clamp(fadeIn ? sinceTile : 1 - sinceParent, 0, 1);
 
         // we don't crossfade tiles that were just refreshed upon expiring:
         // once they're old enough to pass the crossfading threshold
