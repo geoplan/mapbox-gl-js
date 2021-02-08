@@ -2,6 +2,7 @@
 #define EDGE_GAMMA 0.105/DEVICE_PIXEL_RATIO
 
 uniform bool u_is_halo;
+uniform bool u_halo_overdraw;
 #pragma mapbox: define highp vec4 fill_color
 #pragma mapbox: define highp vec4 halo_color
 #pragma mapbox: define lowp float opacity
@@ -41,6 +42,14 @@ void main() {
     lowp float dist = texture2D(u_texture, tex).a;
     highp float gamma_scaled = gamma * gamma_scale;
     highp float alpha = smoothstep(buff - gamma_scaled, buff + gamma_scaled, dist);
+
+    if (u_halo_overdraw) {
+        gamma = (halo_blur * 1.19 / SDF_PX + EDGE_GAMMA) / (fontScale * u_gamma_scale);
+        lowp float buff_halo = (6.0 - halo_width / fontScale) / SDF_PX;
+        highp float alpha_halo = smoothstep(buff_halo - gamma_scaled, buff_halo + gamma_scaled, dist);
+        color = mix(halo_color, color, alpha);
+        alpha = alpha_halo;
+    }
 
     gl_FragColor = color * (alpha * opacity * fade_opacity);
 

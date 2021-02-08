@@ -105,6 +105,7 @@ export type PaintProps = {|
     "text-halo-color": DataDrivenProperty<Color>,
     "text-halo-width": DataDrivenProperty<number>,
     "text-halo-blur": DataDrivenProperty<number>,
+    "halo-overdraw": DataConstantProperty<boolean>,
     "text-translate": DataConstantProperty<[number, number]>,
     "text-translate-anchor": DataConstantProperty<"map" | "viewport">,
 |};
@@ -122,6 +123,7 @@ const paint: Properties<PaintProps> = new Properties({
     "text-halo-color": new DataDrivenProperty(styleSpec["paint_symbol"]["text-halo-color"]),
     "text-halo-width": new DataDrivenProperty(styleSpec["paint_symbol"]["text-halo-width"]),
     "text-halo-blur": new DataDrivenProperty(styleSpec["paint_symbol"]["text-halo-blur"]),
+    "halo-overdraw": new DataConstantProperty(styleSpec["paint_symbol"]["halo-overdraw"]),
     "text-translate": new DataConstantProperty(styleSpec["paint_symbol"]["text-translate"]),
     "text-translate-anchor": new DataConstantProperty(styleSpec["paint_symbol"]["text-translate-anchor"]),
 });

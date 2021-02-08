@@ -164,9 +164,11 @@ function drawTileSymbols(program, programConfiguration, painter, layer, tile, bu
     if (isSDF) {
         const hasHalo = layer.paint.get(isText ? 'text-halo-width' : 'icon-halo-width').constantOr(1) !== 0;
         const gammaScale = (pitchWithMap ? Math.cos(tr._pitch) * tr.cameraToCenterDistance : 1);
+        const haloOverDraw = layer.paint.get('halo-overdraw');
         gl.uniform1f(program.uniforms.u_gamma_scale, gammaScale);
+        gl.uniform1f(program.uniforms.u_halo_overdraw, haloOverDraw);
 
-        if (hasHalo) { // Draw halo underneath the text.
+        if (hasHalo && !haloOverDraw) { // Draw halo underneath the text.
             gl.uniform1f(program.uniforms.u_is_halo, 1);
             drawSymbolElements(buffers, layer, context, program);
         }
